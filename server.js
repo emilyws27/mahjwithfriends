@@ -60,28 +60,232 @@ function sortTile(a,b){
   return (a.num||0)-(b.num||0);
 }
 
-// All winning hands — checked server-side to prevent cheating
+// All winning hands — checked server-side to prevent cheating.
+// Every check requires exactly 14 tiles (hand size after draw, before discard).
+// Jokers (key 'J') are wild — counted toward any group they help.
 const HANDS = [
-  { name:'Consecutive run',     pts:25,  check(r){ for(const s of SUITS){const ns=r.filter(t=>t.type==='suit'&&t.suit===s).map(t=>t.num);for(let st=1;st<=5;st++){if([0,1,2,3,4].every(i=>ns.includes(st+i)))return true;}}return false;}},
-  { name:'All pairs',           pts:25,  check(r){ if(r.length<14)return false;const k=r.map(tileKey).sort();for(let i=0;i<14;i+=2)if(k[i]!==k[i+1])return false;return true;}},
-  { name:'Three-suit triplets', pts:30,  check(r){ for(let n=1;n<=9;n++){if(SUITS.every(s=>r.filter(t=>t.type==='suit'&&t.suit===s&&t.num===n).length>=3))return true;}return false;}},
-  { name:'Winds & dragons',     pts:30,  check(r){ return r.filter(t=>t.type==='wind'||t.type==='dragon').length>=10;}},
-  { name:'Three kongs',         pts:35,  check(r){ const c={};for(const t of r){const k=tileKey(t);c[k]=(c[k]||0)+1;}return Object.values(c).filter(v=>v>=4).length>=3;}},
-  { name:'Flowers & jokers',    pts:35,  check(r){ return r.filter(t=>t.type==='flower').length>=4&&r.filter(t=>t.type==='joker').length>=4;}},
-  { name:'All one suit',        pts:40,  check(r){ const st=r.filter(t=>t.type==='suit');return st.length>=14&&new Set(st.map(t=>t.suit)).size===1;}},
-  { name:'Dragon pungs',        pts:40,  check(r){ return DRAGONS.every(d=>r.filter(t=>t.type==='dragon'&&t.suit===d).length>=3);}},
-  { name:'Wind sequence',       pts:45,  check(r){ return WINDS.every(w=>r.filter(t=>t.type==='wind'&&t.suit===w).length>=3);}},
-  { name:'Quints',              pts:50,  check(r){ const c={};for(const t of r){const k=tileKey(t);c[k]=(c[k]||0)+1;}return Object.values(c).filter(v=>v>=5).length>=2;}},
-  { name:'Lucky thirteen',      pts:50,  check(r){ return new Set(r.map(tileKey)).size>=13&&r.length>=14;}},
-  { name:'Symmetrical hand',    pts:45,  check(r){ const bam=r.filter(t=>t.type==='suit'&&t.suit==='bam').map(t=>t.num).sort((a,b)=>a-b);const dot=r.filter(t=>t.type==='suit'&&t.suit==='dot').map(t=>t.num).sort((a,b)=>a-b);return bam.length>=5&&JSON.stringify(bam)===JSON.stringify(dot);}},
+  {
+    // 5 consecutive numbers in one suit, as a pung(3)+pair(2) or two pungs+run etc.
+    // Simplified requirement: at least 5 *consecutive* numbers present with total count >= 5
+    name: 'Consecutive run', pts: 25,
+    check(r) {
+      if (r.length < 14) return false;
+      const jokers = r.filter(t => t.type === 'joker').length;
+      for (const s of SUITS) {
+        const counts = {};
+        for (const t of r) if (t.type==='suit' && t.suit===s) counts[t.num] = (counts[t.num]||0)+1;
+        // Need at least 14 tiles committed to one suit run — require 5-tile run with 3+ of each
+        for (let start = 1; start <= 5; start++) {
+          const needed = [start,start+1,start+2,start+3,start+4];
+          const have = needed.reduce((sum,n) => sum + (counts[n]||0), 0);
+          const jokersNeeded = needed.filter(n => !counts[n]).length;
+          if (jokersNeeded <= jokers && have + Math.min(jokersNeeded, jokers) >= 5 &&
+              needed.every(n => (counts[n]||0) + jokers >= 1) &&
+              // Require the total hand to be mostly this run — at least 10 tiles from run+jokers
+              have + jokers >= 10) return true;
+        }
+      }
+      return false;
+    }
+  },
+  {
+    // 7 exact pairs — jokers can substitute for one tile in a pair
+    name: 'All pairs', pts: 25,
+    check(r) {
+      if (r.length < 14) return false;
+      const counts = {};
+      for (const t of r) if (t.type !== 'joker') { const k=tileKey(t); counts[k]=(counts[k]||0)+1; }
+      const jokers = r.filter(t => t.type==='joker').length;
+      let pairs = 0, jokersUsed = 0;
+      for (const v of Object.values(counts)) {
+        pairs += Math.floor(v / 2);
+        // odd tile can be paired with a joker
+        if (v % 2 === 1 && jokersUsed < jokers) { pairs++; jokersUsed++; }
+      }
+      return pairs >= 7;
+    }
+  },
+  {
+    // Same number as a triplet in ALL THREE suits (9 tiles) + any 5 more forming valid groups
+    name: 'Three-suit triplets', pts: 30,
+    check(r) {
+      if (r.length < 14) return false;
+      const jokers = r.filter(t => t.type==='joker').length;
+      for (let n = 1; n <= 9; n++) {
+        const counts = SUITS.map(s => r.filter(t => t.type==='suit' && t.suit===s && t.num===n).length);
+        const jokersNeeded = counts.filter(c => c < 3).reduce((sum, c) => sum + (3 - c), 0);
+        if (jokersNeeded <= jokers && counts.every(c => c + jokers >= 3)) return true;
+      }
+      return false;
+    }
+  },
+  {
+    // 12+ wind and dragon tiles (leaving only 2 for a pair — tight requirement)
+    name: 'Winds & dragons', pts: 30,
+    check(r) {
+      if (r.length < 14) return false;
+      const honor = r.filter(t => t.type==='wind' || t.type==='dragon').length;
+      const jokers = r.filter(t => t.type==='joker').length;
+      return honor + jokers >= 12;
+    }
+  },
+  {
+    // Three groups of 4 identical tiles (kongs) = 12 tiles + a pair
+    name: 'Three kongs', pts: 35,
+    check(r) {
+      if (r.length < 14) return false;
+      const counts = {};
+      for (const t of r) if (t.type !== 'joker') { const k=tileKey(t); counts[k]=(counts[k]||0)+1; }
+      const jokers = r.filter(t => t.type==='joker').length;
+      // Count how many groups of 4 can be formed (jokers fill gaps)
+      const entries = Object.entries(counts).sort((a,b) => b[1]-a[1]);
+      let jLeft = jokers, kongs = 0;
+      for (const [,v] of entries) {
+        const need = Math.max(0, 4 - v);
+        if (need <= jLeft) { jLeft -= need; kongs++; }
+        if (kongs >= 3) return true;
+      }
+      return false;
+    }
+  },
+  {
+    // 4+ flowers AND 4+ jokers (8 special tiles + 6 more)
+    name: 'Flowers & jokers', pts: 35,
+    check(r) {
+      if (r.length < 14) return false;
+      return r.filter(t=>t.type==='flower').length >= 4 &&
+             r.filter(t=>t.type==='joker').length  >= 4;
+    }
+  },
+  {
+    // All 14 tiles in exactly one suit (no honor tiles, no jokers/flowers)
+    name: 'All one suit', pts: 40,
+    check(r) {
+      if (r.length < 14) return false;
+      const jokers = r.filter(t=>t.type==='joker').length;
+      const suited = r.filter(t=>t.type==='suit');
+      if (suited.length + jokers < 14) return false;
+      const suits = new Set(suited.map(t=>t.suit));
+      return suits.size === 1;
+    }
+  },
+  {
+    // Pung of every dragon: 3× Red + 3× Green + 3× Soap = 9 tiles + 5 more
+    name: 'Dragon pungs', pts: 40,
+    check(r) {
+      if (r.length < 14) return false;
+      const jokers = r.filter(t=>t.type==='joker').length;
+      let jLeft = jokers;
+      for (const d of DRAGONS) {
+        const have = r.filter(t=>t.type==='dragon'&&t.suit===d).length;
+        const need = Math.max(0, 3 - have);
+        if (need > jLeft) return false;
+        jLeft -= need;
+      }
+      return true;
+    }
+  },
+  {
+    // Pung of every wind: 3× East + 3× South + 3× West + 3× North = 12 tiles + pair
+    name: 'Wind sequence', pts: 45,
+    check(r) {
+      if (r.length < 14) return false;
+      const jokers = r.filter(t=>t.type==='joker').length;
+      let jLeft = jokers;
+      for (const w of WINDS) {
+        const have = r.filter(t=>t.type==='wind'&&t.suit===w).length;
+        const need = Math.max(0, 3 - have);
+        if (need > jLeft) return false;
+        jLeft -= need;
+      }
+      return true;
+    }
+  },
+  {
+    // Two quints (5 of same tile) using jokers — requires 10+ tiles in just 2 groups
+    name: 'Quints', pts: 50,
+    check(r) {
+      if (r.length < 14) return false;
+      const counts = {};
+      for (const t of r) if (t.type !== 'joker') { const k=tileKey(t); counts[k]=(counts[k]||0)+1; }
+      const jokers = r.filter(t=>t.type==='joker').length;
+      const entries = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+      let jLeft = jokers, quints = 0;
+      for (const [,v] of entries) {
+        const need = Math.max(0, 5 - v);
+        if (need <= jLeft) { jLeft -= need; quints++; }
+        if (quints >= 2) return true;
+      }
+      return false;
+    }
+  },
+  {
+    // 13 DIFFERENT non-joker tile types + one duplicate — genuinely rare
+    name: 'Lucky thirteen', pts: 50,
+    check(r) {
+      if (r.length < 14) return false;
+      const nonJoker = r.filter(t => t.type !== 'joker');
+      const keys = nonJoker.map(tileKey);
+      const unique = new Set(keys);
+      if (unique.size < 13) return false;
+      // Must have at least one pair among those 13+ types
+      const counts = {};
+      for (const k of keys) counts[k] = (counts[k]||0)+1;
+      return Object.values(counts).some(v => v >= 2);
+    }
+  },
+  {
+    // Identical number sequence in Bam and Dot (e.g. 1-2-3-4-5 in both)
+    name: 'Symmetrical hand', pts: 45,
+    check(r) {
+      if (r.length < 14) return false;
+      const jokers = r.filter(t=>t.type==='joker').length;
+      const bam = r.filter(t=>t.type==='suit'&&t.suit==='bam').map(t=>t.num).sort((a,b)=>a-b);
+      const dot = r.filter(t=>t.type==='suit'&&t.suit==='dot').map(t=>t.num).sort((a,b)=>a-b);
+      // Need at least 5 matching numbers in each suit, same sequence
+      if (bam.length < 5 || dot.length < 5) return false;
+      if (JSON.stringify(bam) !== JSON.stringify(dot)) return false;
+      // And total bam+dot should make up most of the hand
+      return bam.length + dot.length + jokers >= 12;
+    }
+  },
 ];
 
 function bestHand(rack){ for(const h of HANDS) if(h.check(rack)) return h; return null; }
 
-function aiDiscard(hand){
-  const c={};for(const t of hand){const k=tileKey(t);c[k]=(c[k]||0)+1;}
-  const singles=hand.filter(t=>c[tileKey(t)]===1&&t.type!=='joker'&&t.type!=='flower');
-  return singles.length?singles[Math.floor(Math.random()*singles.length)]:hand[Math.floor(Math.random()*hand.length)];
+// Smarter AI: score each tile by how many pairs/groups it contributes to,
+// then discard the tile that contributes least
+function aiDiscard(hand) {
+  const jokers = hand.filter(t => t.type === 'joker');
+  const flowers = hand.filter(t => t.type === 'flower');
+  // Never discard jokers or flowers (they're universally useful)
+  const candidates = hand.filter(t => t.type !== 'joker' && t.type !== 'flower');
+  if (!candidates.length) return hand[Math.floor(Math.random() * hand.length)];
+
+  // Score each candidate tile: higher = more useful to keep
+  function tileScore(tile, rest) {
+    const k = tileKey(tile);
+    const sameKey = rest.filter(t => tileKey(t) === k).length;
+    if (sameKey >= 2) return 10; // part of a triplet/kong
+    if (sameKey === 1) return 5;  // part of a pair
+    // Check if adjacent suit tiles exist (potential run)
+    if (tile.type === 'suit') {
+      const adj = rest.filter(t => t.type === 'suit' && t.suit === tile.suit &&
+        Math.abs(t.num - tile.num) <= 2).length;
+      if (adj >= 2) return 4;
+      if (adj === 1) return 2;
+    }
+    return 0; // isolated tile
+  }
+
+  // Find the tile with the lowest score (most expendable)
+  let worst = null, worstScore = Infinity;
+  for (const t of candidates) {
+    const rest = hand.filter(x => x.id !== t.id);
+    const score = tileScore(t, rest);
+    if (score < worstScore) { worstScore = score; worst = t; }
+  }
+  return worst || candidates[Math.floor(Math.random() * candidates.length)];
 }
 
 // ── Room management ──
@@ -169,8 +373,10 @@ function startGame(room){
   room.charlestonStep = 0;
   room.phase = 'charleston';
 
-  // Fill with AI if < 4 human players
-  const humanCount = room.players.filter(p=>!p.isAI).length;
+  // Strip any AI players from a previous round before re-adding
+  room.players = room.players.filter(p => !p.isAI);
+
+  // Fill empty seats with AI
   const aiNames = ['East AI','South AI','West AI'];
   let aiIdx = 0;
   while(room.players.length < 4){
@@ -180,14 +386,15 @@ function startGame(room){
     aiIdx++;
   }
 
-  // Deal 13 to each, 14 to first
+  // Deal 14 to first player, 13 to the rest
   for(let i=0;i<room.players.length;i++){
     const n = i===0?14:13;
     room.players[i].hand = room.wall.splice(0,n).sort(sortTile);
     room.players[i].exposed = [];
+    room.players[i]._charlestonPicks = null;
   }
 
-  addLog(room,'Game started! Complete the Charleston.');
+  addLog(room,'New round started! Complete the Charleston.');
   broadcastStates(room);
 }
 
@@ -300,6 +507,7 @@ wss.on('connection', ws => {
         sendTo(result.player,{ type:'joined', code:result.room.code, playerId:result.player.id });
         broadcastStates(result.room);
         broadcast(result.room,{ type:'playerjoined', name:result.player.name }, result.player.id);
+        broadcast(result.room,{ type:'chat', playerId:'system', name:'', text:`${result.player.name} joined the room`, system:true });
         break;
       }
 
@@ -413,8 +621,24 @@ wss.on('connection', ws => {
       }
 
       case 'next_round': {
-        if(!myRoom||myRoom.players[0]?.id!==myPlayer?.id) return;
-        startGame(myRoom);
+        if(!myRoom||!myPlayer) return;
+        // Any human in the room can trigger next round
+        if(myRoom.players.some(p=>p.id===myPlayer.id&&!p.isAI)) startGame(myRoom);
+        break;
+      }
+
+      case 'chat': {
+        if(!myRoom||!myPlayer||!msg.text) return;
+        const text = String(msg.text).trim().slice(0, 200);
+        if(!text) return;
+        const chatMsg = {
+          type: 'chat',
+          playerId: myPlayer.id,
+          name: myPlayer.name,
+          text,
+          system: false,
+        };
+        broadcast(myRoom, chatMsg);
         break;
       }
 
@@ -448,7 +672,7 @@ wss.on('connection', ws => {
     if(myRoom&&myPlayer){
       addLog(myRoom,`${myPlayer.name} disconnected`);
       if(!myPlayer.isAI) myPlayer.ws=null;
-      // If all humans gone, clean up room after delay
+      broadcast(myRoom,{type:'chat',playerId:'system',name:'',text:`${myPlayer.name} left`,system:true});
       const humansWith = myRoom.players.filter(p=>!p.isAI&&p.ws&&p.ws.readyState===1);
       if(humansWith.length===0) setTimeout(()=>{ if(rooms.get(myRoom.code)===myRoom) rooms.delete(myRoom.code); },60000);
       else broadcastStates(myRoom);

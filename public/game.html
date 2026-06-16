@@ -17,6 +17,7 @@
     </div>
   </header>
   <main id="root"><p style="text-align:center;padding:40px;color:rgba(255,255,255,.4)">Connecting…</p></main>
+  <div id="chat-panel" class="chat-wrap"></div>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="modal-root"></div>
@@ -58,18 +59,30 @@ function backTiles(n,sm=false){return Array.from({length:n},()=>`<div class="til
 
 // ── Winning hand checker (mirrors server) ──
 const HANDS=[
-  {name:'Consecutive run',     pts:25,  desc:'5 consecutive tiles in one suit',check(r){for(const s of SUITS){const ns=r.filter(t=>t.type==='suit'&&t.suit===s).map(t=>t.num);for(let st=1;st<=5;st++){if([0,1,2,3,4].every(i=>ns.includes(st+i)))return true;}}return false;}},
-  {name:'All pairs',           pts:25,  desc:'7 matched pairs (14 tiles)',check(r){if(r.length<14)return false;const k=r.map(tileKey).sort();for(let i=0;i<14;i+=2)if(k[i]!==k[i+1])return false;return true;}},
-  {name:'Three-suit triplets', pts:30,  desc:'Same number as triplets in Bam, Crack & Dot',check(r){for(let n=1;n<=9;n++){if(SUITS.every(s=>r.filter(t=>t.type==='suit'&&t.suit===s&&t.num===n).length>=3))return true;}return false;}},
-  {name:'Winds & dragons',     pts:30,  desc:'10+ wind and dragon tiles',check(r){return r.filter(t=>t.type==='wind'||t.type==='dragon').length>=10;}},
-  {name:'Three kongs',         pts:35,  desc:'Three sets of 4 identical tiles',check(r){const c={};for(const t of r){const k=tileKey(t);c[k]=(c[k]||0)+1;}return Object.values(c).filter(v=>v>=4).length>=3;}},
-  {name:'Flowers & jokers',    pts:35,  desc:'4+ flowers and 4+ jokers',check(r){return r.filter(t=>t.type==='flower').length>=4&&r.filter(t=>t.type==='joker').length>=4;}},
-  {name:'All one suit',        pts:40,  desc:'14 tiles all in Bam, Crack, or Dot',check(r){const st=r.filter(t=>t.type==='suit');return st.length>=14&&new Set(st.map(t=>t.suit)).size===1;}},
-  {name:'Dragon pungs',        pts:40,  desc:'A triplet of every dragon (Red, Green, Soap)',check(r){return DRAGONS.every(d=>r.filter(t=>t.type==='dragon'&&t.suit===d).length>=3);}},
-  {name:'Wind sequence',       pts:45,  desc:'A triplet of every wind (E, S, W, N)',check(r){return WINDS.every(w=>r.filter(t=>t.type==='wind'&&t.suit===w).length>=3);}},
-  {name:'Symmetrical hand',    pts:45,  desc:'Identical number sequence in Bam and Dot',check(r){const bam=r.filter(t=>t.type==='suit'&&t.suit==='bam').map(t=>t.num).sort((a,b)=>a-b);const dot=r.filter(t=>t.type==='suit'&&t.suit==='dot').map(t=>t.num).sort((a,b)=>a-b);return bam.length>=5&&JSON.stringify(bam)===JSON.stringify(dot);}},
-  {name:'Quints',              pts:50,  desc:'Two sets of 5 identical tiles (use jokers)',check(r){const c={};for(const t of r){const k=tileKey(t);c[k]=(c[k]||0)+1;}return Object.values(c).filter(v=>v>=5).length>=2;}},
-  {name:'Lucky thirteen',      pts:50,  desc:'13 different tile types plus any 14th',check(r){return new Set(r.map(tileKey)).size>=13&&r.length>=14;}},
+  {name:'Consecutive run',pts:25,desc:'5-tile run in one suit, 10+ tiles committed to that run',
+   check(r){if(r.length<14)return false;const j=r.filter(t=>t.type==='joker').length;for(const s of SUITS){const c={};for(const t of r)if(t.type==='suit'&&t.suit===s)c[t.num]=(c[t.num]||0)+1;for(let st=1;st<=5;st++){const need=[st,st+1,st+2,st+3,st+4];const have=need.reduce((s,n)=>s+(c[n]||0),0);const jNeed=need.filter(n=>!c[n]).length;if(jNeed<=j&&need.every(n=>(c[n]||0)+j>=1)&&have+j>=10)return true;}}return false;}},
+  {name:'All pairs',pts:25,desc:'7 matched pairs (jokers can sub for one in a pair)',
+   check(r){if(r.length<14)return false;const c={};for(const t of r)if(t.type!=='joker'){const k=tileKey(t);c[k]=(c[k]||0)+1;}const j=r.filter(t=>t.type==='joker').length;let pairs=0,ju=0;for(const v of Object.values(c)){pairs+=Math.floor(v/2);if(v%2===1&&ju<j){pairs++;ju++;}}return pairs>=7;}},
+  {name:'Three-suit triplets',pts:30,desc:'Same number as a triplet in all 3 suits',
+   check(r){if(r.length<14)return false;const j=r.filter(t=>t.type==='joker').length;for(let n=1;n<=9;n++){const counts=SUITS.map(s=>r.filter(t=>t.type==='suit'&&t.suit===s&&t.num===n).length);const jNeed=counts.reduce((s,c)=>s+Math.max(0,3-c),0);if(jNeed<=j&&counts.every(c=>c+j>=3))return true;}return false;}},
+  {name:'Winds & dragons',pts:30,desc:'12+ wind and dragon tiles (leaving only a pair)',
+   check(r){if(r.length<14)return false;const j=r.filter(t=>t.type==='joker').length;return r.filter(t=>t.type==='wind'||t.type==='dragon').length+j>=12;}},
+  {name:'Three kongs',pts:35,desc:'Three groups of 4 identical tiles',
+   check(r){if(r.length<14)return false;const c={};for(const t of r)if(t.type!=='joker'){const k=tileKey(t);c[k]=(c[k]||0)+1;}const j=r.filter(t=>t.type==='joker').length;const entries=Object.entries(c).sort((a,b)=>b[1]-a[1]);let jl=j,kongs=0;for(const[,v]of entries){const need=Math.max(0,4-v);if(need<=jl){jl-=need;kongs++;}if(kongs>=3)return true;}return false;}},
+  {name:'Flowers & jokers',pts:35,desc:'4+ flowers AND 4+ jokers',
+   check(r){if(r.length<14)return false;return r.filter(t=>t.type==='flower').length>=4&&r.filter(t=>t.type==='joker').length>=4;}},
+  {name:'All one suit',pts:40,desc:'All 14 tiles in one suit only (no honors)',
+   check(r){if(r.length<14)return false;const j=r.filter(t=>t.type==='joker').length;const s=r.filter(t=>t.type==='suit');if(s.length+j<14)return false;return new Set(s.map(t=>t.suit)).size===1;}},
+  {name:'Dragon pungs',pts:40,desc:'A triplet of every dragon type (Red, Green, Soap)',
+   check(r){if(r.length<14)return false;const j=r.filter(t=>t.type==='joker').length;let jl=j;for(const d of DRAGONS){const have=r.filter(t=>t.type==='dragon'&&t.suit===d).length;const need=Math.max(0,3-have);if(need>jl)return false;jl-=need;}return true;}},
+  {name:'Wind sequence',pts:45,desc:'A triplet of every wind (East, South, West, North)',
+   check(r){if(r.length<14)return false;const j=r.filter(t=>t.type==='joker').length;let jl=j;for(const w of WINDS){const have=r.filter(t=>t.type==='wind'&&t.suit===w).length;const need=Math.max(0,3-have);if(need>jl)return false;jl-=need;}return true;}},
+  {name:'Symmetrical hand',pts:45,desc:'Same number sequence in Bam and Dot, 12+ tiles total',
+   check(r){if(r.length<14)return false;const j=r.filter(t=>t.type==='joker').length;const bam=r.filter(t=>t.type==='suit'&&t.suit==='bam').map(t=>t.num).sort((a,b)=>a-b);const dot=r.filter(t=>t.type==='suit'&&t.suit==='dot').map(t=>t.num).sort((a,b)=>a-b);if(bam.length<5||dot.length<5)return false;if(JSON.stringify(bam)!==JSON.stringify(dot))return false;return bam.length+dot.length+j>=12;}},
+  {name:'Quints',pts:50,desc:'Two groups of 5 identical tiles (use jokers)',
+   check(r){if(r.length<14)return false;const c={};for(const t of r)if(t.type!=='joker'){const k=tileKey(t);c[k]=(c[k]||0)+1;}const j=r.filter(t=>t.type==='joker').length;const entries=Object.entries(c).sort((a,b)=>b[1]-a[1]);let jl=j,q=0;for(const[,v]of entries){const need=Math.max(0,5-v);if(need<=jl){jl-=need;q++;}if(q>=2)return true;}return false;}},
+  {name:'Lucky thirteen',pts:50,desc:'13 unique tile types + one duplicate (genuine rarity)',
+   check(r){if(r.length<14)return false;const nonJ=r.filter(t=>t.type!=='joker');const keys=nonJ.map(tileKey);const unique=new Set(keys);if(unique.size<13)return false;const c={};for(const k of keys)c[k]=(c[k]||0)+1;return Object.values(c).some(v=>v>=2);}},
 ];
 function bestHand(r){for(const h of HANDS)if(h.check(r))return h;return null;}
 
@@ -78,6 +91,7 @@ let ws, myId, myCode, myName;
 let G = { phase:'lobby', players:[], discards:[], currentPlayer:0, charlestonStep:0, wallCount:0, log:[], gameScores:{} };
 let selected = [], charPicks = [], showHandCard = false, hints = [];
 let turnDrawn = false, lastDiscardKey = null, lastDiscardPlayer = -1;
+let chatMessages = [], chatCollapsed = false;
 
 function myPlayer(){ return G.players.find(p=>p.id===myId); }
 function myIdx(){ return G.players.findIndex(p=>p.id===myId); }
@@ -100,6 +114,12 @@ function handleMsg(msg){
   if(msg.type==='joined'){ myId=msg.playerId; return; }
   if(msg.type==='error'){ toast(msg.message); return; }
   if(msg.type==='hint'){ hints=msg.hints; render(); return; }
+  if(msg.type==='chat'){
+    chatMessages.push(msg);
+    if(chatMessages.length>100) chatMessages.shift();
+    renderChat();
+    return;
+  }
   if(msg.type==='roundover'){ handleRoundOver(msg); return; }
   if(msg.type==='state'){
     const prev=G.phase;
@@ -115,12 +135,14 @@ function handleMsg(msg){
     lastDiscardPlayer=msg.lastDiscardPlayer;
     if(prev!==G.phase){ selected=[]; charPicks=[]; }
     render();
+    renderChat();
   }
 }
 
 function handleRoundOver(msg){
   G.gameScores=msg.gameScores||G.gameScores;
   showRoundOver(msg);
+  renderChat();
 }
 
 // ── Render ──
@@ -241,15 +263,61 @@ function renderLog(){
   return `<div class="log" style="margin-top:10px">${G.log.slice(0,8).map((l,i)=>`<p class="${i===0?'new':''}">${l}</p>`).join('')}</div>`;
 }
 
+function renderChat(){
+  const el = document.getElementById('chat-panel');
+  if(!el) return;
+  const msgs = chatMessages.slice(-40);
+  el.innerHTML = `
+    <div class="chat-header" onclick="toggleChat()">
+      💬 Chat
+      <span class="chat-toggle">${chatCollapsed?'▲ show':'▼ hide'}</span>
+    </div>
+    <div class="chat-messages ${chatCollapsed?'collapsed':''}" id="chat-msgs">
+      ${msgs.length===0?`<p style="font-size:12px;color:rgba(255,255,255,.28);font-style:italic">No messages yet — say hi!</p>`:''}
+      ${msgs.map(m=>`
+        <div class="chat-msg ${m.system?'system':''}">
+          ${m.system?'':`<span class="chat-name ${m.playerId===myId?'me':''}">${m.name}</span>`}
+          <span class="chat-text">${escHtml(m.text)}</span>
+        </div>`).join('')}
+    </div>
+    <div class="chat-input-row ${chatCollapsed?'collapsed':''}">
+      <input class="chat-input" id="chat-input" type="text" placeholder="Say something…" maxlength="200"
+        onkeydown="if(event.key==='Enter')sendChat()"/>
+      <button class="chat-send" onclick="sendChat()" title="Send">➤</button>
+    </div>`;
+  // Scroll to bottom
+  const msgEl = document.getElementById('chat-msgs');
+  if(msgEl) msgEl.scrollTop = msgEl.scrollHeight;
+}
+
+function escHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+window.toggleChat = function(){
+  chatCollapsed = !chatCollapsed;
+  renderChat();
+};
+
+window.sendChat = function(){
+  const input = document.getElementById('chat-input');
+  if(!input) return;
+  const text = input.value.trim();
+  if(!text) return;
+  ws.send(JSON.stringify({type:'chat', text}));
+  input.value = '';
+};
+
 function showRoundOver(msg){
   const isWinner=msg.winnerId===myId;
+  // Any human can start next round — show button to everyone
   document.getElementById('root').innerHTML=`
     <div class="roundover">
       <div class="trophy">${isWinner?'🏆':'😔'}</div>
       <h2>${isWinner?'Mahjong! You win!':(msg.winnerName?msg.winnerName+' wins!':'Draw game')}</h2>
       <p>${msg.handName?msg.handName+' — '+msg.pts+' points':msg.winnerId?'':'Wall was empty'}</p>
       ${renderScoreboard()}
-      ${myIdx()===0?`<button class="btn btn-gold" onclick="nextRound()" style="margin-top:8px">Play again</button>`:'<p style="font-size:13px;color:rgba(255,255,255,.4)">Waiting for host to start next round…</p>'}
+      <button class="btn btn-gold" onclick="nextRound()" style="margin-top:8px">Play again</button>
     </div>`;
 }
 
