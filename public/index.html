@@ -100,25 +100,20 @@ function handleMsg(msg) {
   if (msg.type === 'joined')  { myId = msg.playerId; myCode = msg.code; }
   if (msg.type === 'error')   { toast(msg.message); return; }
   if (msg.type === 'state')   { updateLobby(msg); }
-  if (msg.type === 'roundover') {
-    // Game started — switch to game page
-    sessionStorage.setItem('mj_name', myName);
-    sessionStorage.setItem('mj_id',   myId);
-    sessionStorage.setItem('mj_code', myCode);
-    location.href = 'game.html';
-  }
+}
+
+function goToGame() {
+  sessionStorage.setItem('mj_name', myName);
+  sessionStorage.setItem('mj_id',   myId);
+  sessionStorage.setItem('mj_code', myCode);
+  location.href = 'game.html';
 }
 
 function updateLobby(state) {
   roomPlayers = state.players;
-  if (state.phase !== 'lobby' && state.phase !== 'charleston') {
-    sessionStorage.setItem('mj_name', myName);
-    sessionStorage.setItem('mj_id',   myId);
-    sessionStorage.setItem('mj_code', myCode);
-    location.href = 'game.html';
-    return;
-  }
-  if (state.phase === 'lobby') renderWaiting(state);
+  // Any phase other than lobby means the game has started — go to game page
+  if (state.phase !== 'lobby') { goToGame(); return; }
+  renderWaiting(state);
 }
 
 function renderLobby() {

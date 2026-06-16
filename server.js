@@ -264,6 +264,27 @@ wss.on('connection', ws => {
 
     switch(msg.type){
 
+      case 'reconnect': {
+        // Player is returning from lobby→game page redirect; re-attach their ws
+        const code = msg.code?.toUpperCase();
+        const room = rooms.get(code);
+        if (!room) { sendTo({ws}, {type:'error', message:'Room not found'}); return; }
+        const player = room.players.find(p => p.id === msg.playerId);
+        if (!player) {
+          // Player not found — try joining as new (handles edge cases)
+          const result = joinRoom(code, ws, msg.name||'Player');
+          if (result.error) { sendTo({ws},{type:'error',message:result.error}); return; }
+          myRoom=result.room; myPlayer=result.player;
+          sendTo(result.player,{type:'joined',code:result.room.code,playerId:result.player.id});
+        } else {
+          player.ws = ws;
+          myRoom = room; myPlayer = player;
+          sendTo(player,{type:'joined',code:room.code,playerId:player.id});
+        }
+        broadcastStates(myRoom);
+        break;
+      }
+
       case 'create': {
         const { room, player } = createRoom(ws, msg.name||'Host');
         myRoom=room; myPlayer=player;
@@ -286,15 +307,15 @@ wss.on('connection', ws => {
         if(!myPlayer||!myRoom) return;
         myPlayer.ready=true;
         broadcastStates(myRoom);
-        // Start when host says start (or all 4 ready)
         const allReady = myRoom.players.length>=2 && myRoom.players.every(p=>p.ready);
         if(allReady || msg.force) startGame(myRoom);
         break;
       }
 
       case 'start': {
-        if(!myRoom||myRoom.players[0]?.id!==myPlayer?.id) return; // host only
-        startGame(myRoom);
+        if(!myRoom||!myPlayer) return;
+        // Any human player in the room can trigger start (host check was too strict)
+        if(myRoom.players.some(p=>p.id===myPlayer.id&&!p.isAI)) startGame(myRoom);
         break;
       }
 

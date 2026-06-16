@@ -88,7 +88,8 @@ function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(`${proto}://${location.host}`);
   ws.onopen=()=>{
-    ws.send(JSON.stringify({type:'join',name:myName,code:myCode}));
+    // Reconnect with our existing player ID so the server recognises us
+    ws.send(JSON.stringify({type:'reconnect', playerId:myId, code:myCode, name:myName}));
   };
   ws.onmessage=e=>handleMsg(JSON.parse(e.data));
   ws.onclose=()=>toast('Disconnected from server');
