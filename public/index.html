@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Mahjong Night</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>🀄</text></svg>"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">🀄 Mahjong Night <small>American rules</small></div>
+    <button class="btn btn-sm" onclick="showInstructions()">How to play</button>
+  </header>
+  <main id="root"></main>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="modal-root"></div>
+
+<script>
+const INSTRUCTIONS_HTML = `
+<div class="modal-backdrop" onclick="closeModal(event)">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">&times;</button>
+    <h2>How to play</h2>
+    <div class="inst-section">
+      <h4>Goal</h4>
+      <p>Build one of the winning hands using 14 tiles. You'll draw and discard tiles each turn until someone declares Mahjong.</p>
+    </div>
+    <div class="inst-section">
+      <h4>The Charleston</h4>
+      <p>Before play begins, each player passes 3 tiles: first to the right, then across, then to the left. Choose tiles you don't want.</p>
+    </div>
+    <div class="inst-section">
+      <h4>Your turn</h4>
+      <ul>
+        <li>Draw a tile from the wall, OR claim the last discarded tile</li>
+        <li>Select a tile from your rack and click Discard</li>
+        <li>If you have a winning hand after drawing, click Declare Mahjong!</li>
+      </ul>
+    </div>
+    <div class="inst-section">
+      <h4>Special tiles</h4>
+      <ul>
+        <li><strong>Jokers 🃏</strong> — wild tiles, count as anything</li>
+        <li><strong>Flowers 🌸</strong> — special tiles useful in certain hands</li>
+        <li><strong>Winds & Dragons</strong> — honor tiles, not numbered</li>
+      </ul>
+    </div>
+    <div class="inst-section">
+      <h4>Winning hands & points</h4>
+      <table class="hand-table">
+        <thead><tr><th>Hand</th><th>Pts</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>Consecutive run</td><td>25</td><td>5 consecutive tiles in one suit</td></tr>
+          <tr><td>All pairs</td><td>25</td><td>7 matched pairs</td></tr>
+          <tr><td>Three-suit triplets</td><td>30</td><td>Same number, 3 triplets across all suits</td></tr>
+          <tr><td>Winds & dragons</td><td>30</td><td>10+ wind and dragon tiles</td></tr>
+          <tr><td>Three kongs</td><td>35</td><td>Three sets of 4 identical tiles</td></tr>
+          <tr><td>Flowers & jokers</td><td>35</td><td>4+ flowers and 4+ jokers</td></tr>
+          <tr><td>All one suit</td><td>40</td><td>14 tiles all in the same suit</td></tr>
+          <tr><td>Dragon pungs</td><td>40</td><td>Triplet of every dragon type</td></tr>
+          <tr><td>Wind sequence</td><td>45</td><td>Triplet of every wind type</td></tr>
+          <tr><td>Symmetrical hand</td><td>45</td><td>Matching numbers in Bam and Dot</td></tr>
+          <tr><td>Quints</td><td>50</td><td>Two sets of 5 identical tiles (with jokers)</td></tr>
+          <tr><td>Lucky thirteen</td><td>50</td><td>13 unique tile types + any 14th</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="inst-section">
+      <h4>Multiplayer rooms</h4>
+      <p>Create a room and share the 4-letter code with friends. Up to 4 players — empty seats are filled by AI. The host starts the game when everyone is ready.</p>
+    </div>
+  </div>
+</div>`;
+
+function showInstructions() {
+  document.getElementById('modal-root').innerHTML = INSTRUCTIONS_HTML;
+}
+function closeModal(e) {
+  if (!e || e.target.classList.contains('modal-backdrop') || e.target.classList.contains('modal-close')) {
+    document.getElementById('modal-root').innerHTML = '';
+  }
+}
+
+let ws, myName, myCode, myId, roomPlayers = [];
+
+function connect(cb) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}`);
+  ws.onopen = cb;
+  ws.onmessage = e => handleMsg(JSON.parse(e.data));
+  ws.onerror = () => toast('Connection error — is the server running?');
+}
+
+function handleMsg(msg) {
+  if (msg.type === 'created') { myId = msg.playerId; myCode = msg.code; }
+  if (msg.type === 'joined')  { myId = msg.playerId; myCode = msg.code; }
+  if (msg.type === 'error')   { toast(msg.message); return; }
+  if (msg.type === 'state')   { updateLobby(msg); }
+  if (msg.type === 'roundover') {
+    // Game started — switch to game page
+    sessionStorage.setItem('mj_name', myName);
+    sessionStorage.setItem('mj_id',   myId);
+    sessionStorage.setItem('mj_code', myCode);
+    location.href = 'game.html';
+  }
+}
+
+function updateLobby(state) {
+  roomPlayers = state.players;
+  if (state.phase !== 'lobby' && state.phase !== 'charleston') {
+    sessionStorage.setItem('mj_name', myName);
+    sessionStorage.setItem('mj_id',   myId);
+    sessionStorage.setItem('mj_code', myCode);
+    location.href = 'game.html';
+    return;
+  }
+  if (state.phase === 'lobby') renderWaiting(state);
+}
+
+function renderLobby() {
+  document.getElementById('root').innerHTML = `
+    <div class="lobby-wrap">
+      <div class="lobby-hero">🀄</div>
+      <div class="lobby-title">Mahjong Night</div>
+      <div class="lobby-sub">Play American Mahjong with friends — up to 4 players, AI fills empty seats</div>
+
+      <div class="lobby-card">
+        <h3>Create a room</h3>
+        <div class="field-group">
+          <label>Your name</label>
+          <input type="text" id="create-name" placeholder="Enter your name" maxlength="20"/>
+        </div>
+        <button class="btn btn-gold" onclick="createRoom()" style="width:100%">Create room</button>
+      </div>
+
+      <div class="lobby-card">
+        <h3>Join a room</h3>
+        <div class="field-group">
+          <label>Your name</label>
+          <input type="text" id="join-name" placeholder="Enter your name" maxlength="20"/>
+        </div>
+        <div class="field-group">
+          <label>Room code</label>
+          <input type="text" id="join-code" placeholder="e.g. ABCD" maxlength="4" style="letter-spacing:4px;font-size:20px;text-transform:uppercase"/>
+        </div>
+        <button class="btn btn-green" onclick="joinRoom()" style="width:100%">Join room</button>
+      </div>
+    </div>`;
+
+  // enter key support
+  document.getElementById('join-code').addEventListener('keydown', e => { if(e.key==='Enter') joinRoom(); });
+  document.getElementById('create-name').addEventListener('keydown', e => { if(e.key==='Enter') createRoom(); });
+}
+
+function renderWaiting(state) {
+  const isHost = state.players[0]?.id === myId;
+  const humanPlayers = state.players.filter(p => !p.isAI);
+  document.getElementById('root').innerHTML = `
+    <div class="lobby-wrap">
+      <div style="text-align:center;margin-bottom:20px">
+        <div class="sl" style="margin-bottom:6px">Room code — share with friends</div>
+        <div class="code-display">${myCode}</div>
+        <div style="font-size:13px;color:rgba(255,255,255,.45)">${humanPlayers.length}/4 players connected · AI fills empty seats</div>
+      </div>
+
+      <div class="lobby-card">
+        <h3>Players</h3>
+        <div class="player-list">
+          ${humanPlayers.map((p,i) => `
+            <div class="player-pill">
+              <span class="dot" style="${p.id===myId?'':'background:rgba(255,255,255,.3)'}"></span>
+              ${p.name}${i===0?' (host)':''}${p.id===myId?' — you':''}
+              ${p.ready?'<span style="margin-left:auto;font-size:11px;color:rgba(255,255,255,.5)">ready ✓</span>':''}
+            </div>`).join('')}
+          ${Array.from({length:4-humanPlayers.length},()=>`
+            <div class="player-pill" style="opacity:.35">
+              <span class="dot" style="background:rgba(255,255,255,.2)"></span>
+              AI player (waiting…)
+            </div>`).join('')}
+        </div>
+        ${isHost
+          ? `<button class="btn btn-gold" onclick="startGame()" style="width:100%">Start game (${humanPlayers.length} ${humanPlayers.length===1?'player':'players'})</button>`
+          : `<button class="btn" onclick="markReady()" style="width:100%" ${state.players.find(p=>p.id===myId)?.ready?'disabled':''}>I'm ready</button>`}
+      </div>
+    </div>`;
+}
+
+function createRoom() {
+  const name = document.getElementById('create-name').value.trim();
+  if (!name) { toast('Enter your name'); return; }
+  myName = name;
+  connect(() => ws.send(JSON.stringify({ type:'create', name })));
+}
+
+function joinRoom() {
+  const name = document.getElementById('join-name').value.trim();
+  const code = document.getElementById('join-code').value.trim().toUpperCase();
+  if (!name) { toast('Enter your name'); return; }
+  if (code.length !== 4) { toast('Enter a 4-letter room code'); return; }
+  myName = name;
+  connect(() => ws.send(JSON.stringify({ type:'join', name, code })));
+}
+
+function markReady() { ws.send(JSON.stringify({ type:'ready' })); }
+function startGame() { ws.send(JSON.stringify({ type:'start' })); }
+
+function toast(msg, dur=2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), dur);
+}
+
+renderLobby();
+</script>
+</body>
+</html>

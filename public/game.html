@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Mahjong Night — Playing</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>🀄</text></svg>"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">🀄 Mahjong Night <small id="room-code-header"></small></div>
+    <div style="display:flex;gap:7px">
+      <button class="btn btn-sm" onclick="showInstructions()">Rules</button>
+      <button class="btn btn-sm" onclick="location.href='index.html'">Leave</button>
+    </div>
+  </header>
+  <main id="root"><p style="text-align:center;padding:40px;color:rgba(255,255,255,.4)">Connecting…</p></main>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="modal-root"></div>
+
+<script>
+// ── Tile display helpers ──
+const SUIT_EMOJI  = { bam:'🎋', crack:'🀫', dot:'🔴' };
+const WIND_SYM    = { East:'E', South:'S', West:'W', North:'N' };
+const DRAGON_E    = { Red:'🐉', Green:'🟢', Soap:'⬜' };
+const SUITS       = ['bam','crack','dot'];
+const DRAGONS     = ['Red','Green','Soap'];
+const WINDS       = ['East','South','West','North'];
+
+function tileKey(t){
+  if(t.type==='joker')  return 'J';
+  if(t.type==='flower') return 'F'+t.num;
+  if(t.type==='wind')   return 'W_'+t.suit;
+  if(t.type==='dragon') return 'D_'+t.suit;
+  return t.suit[0].toUpperCase()+t.num;
+}
+
+function tileDisp(t){
+  if(t.type==='joker')  return {top:'🃏',bot:'Joker',cls:'tj',color:'var(--joker-c)'};
+  if(t.type==='flower') return {top:t.suit,bot:'Flower',cls:'tf',color:'var(--flower-c)'};
+  if(t.type==='wind')   return {top:WIND_SYM[t.suit],bot:t.suit,cls:'tw',color:'var(--wind-c)'};
+  if(t.type==='dragon') return {top:DRAGON_E[t.suit],bot:t.suit,cls:'td',color:'var(--dragon-c)'};
+  const c={bam:'var(--bam)',crack:'var(--crack)',dot:'var(--dot)'};
+  return {top:SUIT_EMOJI[t.suit],bot:t.num,cls:'',color:c[t.suit]};
+}
+
+function mkTile(t, opts={}){
+  const d=tileDisp(t);
+  const cls=['tile',d.cls,opts.sm?'sm':'',opts.xs?'xs':'',opts.sel?'sel':'',opts.hl?'hl':'',opts.back?'back':''].filter(Boolean).join(' ');
+  const oc=opts.onclick?`onclick="${opts.onclick}"`:'';
+  if(opts.back) return `<div class="${cls}"><span class="ts">🀄</span></div>`;
+  return `<div class="${cls}" style="color:${d.color}" ${oc} title="${tileKey(t)}"><span class="ts">${d.top}</span><span class="tn">${d.bot}</span></div>`;
+}
+function backTiles(n,sm=false){return Array.from({length:n},()=>`<div class="tile back ${sm?'sm xs':''}"><span class="ts">🀄</span></div>`).join('');}
+
+// ── Winning hand checker (mirrors server) ──
+const HANDS=[
+  {name:'Consecutive run',     pts:25,  desc:'5 consecutive tiles in one suit',check(r){for(const s of SUITS){const ns=r.filter(t=>t.type==='suit'&&t.suit===s).map(t=>t.num);for(let st=1;st<=5;st++){if([0,1,2,3,4].every(i=>ns.includes(st+i)))return true;}}return false;}},
+  {name:'All pairs',           pts:25,  desc:'7 matched pairs (14 tiles)',check(r){if(r.length<14)return false;const k=r.map(tileKey).sort();for(let i=0;i<14;i+=2)if(k[i]!==k[i+1])return false;return true;}},
+  {name:'Three-suit triplets', pts:30,  desc:'Same number as triplets in Bam, Crack & Dot',check(r){for(let n=1;n<=9;n++){if(SUITS.every(s=>r.filter(t=>t.type==='suit'&&t.suit===s&&t.num===n).length>=3))return true;}return false;}},
+  {name:'Winds & dragons',     pts:30,  desc:'10+ wind and dragon tiles',check(r){return r.filter(t=>t.type==='wind'||t.type==='dragon').length>=10;}},
+  {name:'Three kongs',         pts:35,  desc:'Three sets of 4 identical tiles',check(r){const c={};for(const t of r){const k=tileKey(t);c[k]=(c[k]||0)+1;}return Object.values(c).filter(v=>v>=4).length>=3;}},
+  {name:'Flowers & jokers',    pts:35,  desc:'4+ flowers and 4+ jokers',check(r){return r.filter(t=>t.type==='flower').length>=4&&r.filter(t=>t.type==='joker').length>=4;}},
+  {name:'All one suit',        pts:40,  desc:'14 tiles all in Bam, Crack, or Dot',check(r){const st=r.filter(t=>t.type==='suit');return st.length>=14&&new Set(st.map(t=>t.suit)).size===1;}},
+  {name:'Dragon pungs',        pts:40,  desc:'A triplet of every dragon (Red, Green, Soap)',check(r){return DRAGONS.every(d=>r.filter(t=>t.type==='dragon'&&t.suit===d).length>=3);}},
+  {name:'Wind sequence',       pts:45,  desc:'A triplet of every wind (E, S, W, N)',check(r){return WINDS.every(w=>r.filter(t=>t.type==='wind'&&t.suit===w).length>=3);}},
+  {name:'Symmetrical hand',    pts:45,  desc:'Identical number sequence in Bam and Dot',check(r){const bam=r.filter(t=>t.type==='suit'&&t.suit==='bam').map(t=>t.num).sort((a,b)=>a-b);const dot=r.filter(t=>t.type==='suit'&&t.suit==='dot').map(t=>t.num).sort((a,b)=>a-b);return bam.length>=5&&JSON.stringify(bam)===JSON.stringify(dot);}},
+  {name:'Quints',              pts:50,  desc:'Two sets of 5 identical tiles (use jokers)',check(r){const c={};for(const t of r){const k=tileKey(t);c[k]=(c[k]||0)+1;}return Object.values(c).filter(v=>v>=5).length>=2;}},
+  {name:'Lucky thirteen',      pts:50,  desc:'13 different tile types plus any 14th',check(r){return new Set(r.map(tileKey)).size>=13&&r.length>=14;}},
+];
+function bestHand(r){for(const h of HANDS)if(h.check(r))return h;return null;}
+
+// ── State ──
+let ws, myId, myCode, myName;
+let G = { phase:'lobby', players:[], discards:[], currentPlayer:0, charlestonStep:0, wallCount:0, log:[], gameScores:{} };
+let selected = [], charPicks = [], showHandCard = false, hints = [];
+let turnDrawn = false, lastDiscardKey = null, lastDiscardPlayer = -1;
+
+function myPlayer(){ return G.players.find(p=>p.id===myId); }
+function myIdx(){ return G.players.findIndex(p=>p.id===myId); }
+function isMyTurn(){ return G.currentPlayer===myIdx()&&G.currentPlayer>=0; }
+
+// ── WebSocket ──
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(`${proto}://${location.host}`);
+  ws.onopen=()=>{
+    ws.send(JSON.stringify({type:'join',name:myName,code:myCode}));
+  };
+  ws.onmessage=e=>handleMsg(JSON.parse(e.data));
+  ws.onclose=()=>toast('Disconnected from server');
+  ws.onerror=()=>toast('Connection error');
+}
+
+function handleMsg(msg){
+  if(msg.type==='joined'){ myId=msg.playerId; return; }
+  if(msg.type==='error'){ toast(msg.message); return; }
+  if(msg.type==='hint'){ hints=msg.hints; render(); return; }
+  if(msg.type==='roundover'){ handleRoundOver(msg); return; }
+  if(msg.type==='state'){
+    const prev=G.phase;
+    G=msg;
+    // track if we just drew this turn (hand grew by 1 without us discarding)
+    const me=myPlayer();
+    if(me){
+      const prevLen=turnDrawn===false&&isMyTurn()?me.handCount:me.handCount;
+      // We detect drawn state by hand size > 13 on our turn
+      turnDrawn = isMyTurn() && me.hand.length > 13;
+    }
+    lastDiscardKey=msg.lastDiscardKey;
+    lastDiscardPlayer=msg.lastDiscardPlayer;
+    if(prev!==G.phase){ selected=[]; charPicks=[]; }
+    render();
+  }
+}
+
+function handleRoundOver(msg){
+  G.gameScores=msg.gameScores||G.gameScores;
+  showRoundOver(msg);
+}
+
+// ── Render ──
+function render(){
+  if(G.phase==='lobby')       { document.getElementById('root').innerHTML='<p style="text-align:center;padding:40px;color:rgba(255,255,255,.4)">Waiting for game to start…</p>'; return; }
+  if(G.phase==='charleston')  { document.getElementById('root').innerHTML=renderCharleston(); return; }
+  if(G.phase==='play')        { document.getElementById('root').innerHTML=renderPlay(); return; }
+}
+
+function renderCharleston(){
+  const me=myPlayer(); if(!me) return '';
+  const dirLabel=['right →','across ↔','← left','optional'][G.charlestonStep]||'';
+  const allPassed=me.hand.length<13||me._charlestonPicks; // rough
+  return `
+    <div class="phase-banner">🎴 Charleston pass ${G.charlestonStep+1} of 3 — select <strong>3 tiles</strong> to pass <strong>${dirLabel}</strong></div>
+    <div class="sl">Your rack — ${me.hand.length} tiles</div>
+    <div class="rack">
+      <div class="rack-tiles">${me.hand.map(t=>mkTile(t,{sel:charPicks.some(p=>p.id===t.id),onclick:`cPickTile(${t.id})`})).join('')}</div>
+    </div>
+    <div class="sl">Tiles to pass</div>
+    <div class="charleston-slots">
+      ${[0,1,2].map(i=>charPicks[i]?mkTile(charPicks[i]):'<div class="c-slot">?</div>').join('')}
+      <button class="btn btn-gold" onclick="doCharleston()" ${charPicks.length<3?'disabled':''} style="margin-left:10px">Pass ${dirLabel}</button>
+    </div>
+    ${renderLog()}`;
+}
+
+function renderPlay(){
+  const me=myPlayer(); if(!me) return '';
+  const myI=myIdx();
+  const others=G.players.filter((_,i)=>i!==myI);
+  const won=bestHand(me.hand);
+  const canDraw=isMyTurn()&&!turnDrawn;
+  const canClaim=isMyTurn()&&!turnDrawn&&lastDiscardKey&&lastDiscardPlayer!==myI;
+  const canDiscard=isMyTurn()&&turnDrawn;
+
+  let statusMsg=isMyTurn()
+    ?(turnDrawn?'Discard a tile from your rack':'Draw a tile or claim the last discard')
+    :`${G.players[G.currentPlayer]?.name||'…'} is taking their turn`;
+
+  return `
+    <div class="phase-banner">${isMyTurn()?'🟢':'⏳'} <strong>${statusMsg}</strong> &nbsp;·&nbsp; ${G.wallCount} tiles in wall</div>
+
+    <div class="opponents">
+      ${others.map(p=>{
+        const theirI=G.players.indexOf(p);
+        const active=G.currentPlayer===theirI;
+        return `<div class="opp ${active?'active-turn':''}">
+          <div class="opp-name">${p.name}${p.isAI?' 🤖':''} <span class="opp-score">${G.gameScores[p.id]||0} pts</span></div>
+          <div class="opp-tiles">${backTiles(Math.min(p.handCount,10),true)}</div>
+          ${p.exposed.length?`<div class="opp-tiles" style="margin-top:3px">${p.exposed.map(t=>mkTile(t,{xs:true})).join('')}</div>`:''}
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="sl">Discard pile — ${G.discards.length} tiles</div>
+    <div class="discard-wrap">
+      <div class="discard-tiles">
+        ${G.discards.slice(-36).map((t,i,arr)=>mkTile(t,{sm:true,hl:i===arr.length-1&&!!lastDiscardKey,onclick:`tryClaimDiscard()`})).join('')}
+      </div>
+    </div>
+
+    ${renderScoreboard()}
+
+    ${won?`<div class="win-label">🏆 Winning hand detected: ${won.name} (${won.pts} pts)</div>`:''}
+    <div class="sl">Your rack — ${me.hand.length} tiles &nbsp;<span style="opacity:.5;font-size:10px">· tap to select · tap again to deselect</span></div>
+    <div class="rack">
+      <div class="rack-tiles">${me.hand.map(t=>mkTile(t,{sel:selected.includes(t.id),onclick:`toggleSel(${t.id})`})).join('')}</div>
+    </div>
+
+    <div class="controls">
+      ${canDraw   ?`<button class="btn btn-gold"  onclick="sendDraw()">Draw tile</button>`:''}
+      ${canClaim  ?`<button class="btn btn-green" onclick="tryClaimDiscard()">Claim discard</button>`:''}
+      ${canDiscard?`<button class="btn btn-red"   onclick="sendDiscard()">Discard selected</button>`:''}
+      ${won       ?`<button class="btn btn-gold"  onclick="sendMahjong()" style="background:var(--gold-lt);color:var(--ink);border-color:var(--gold-lt)">🏆 Declare Mahjong!</button>`:''}
+      <button class="btn" onclick="sortRack()">Sort rack</button>
+      <button class="btn" onclick="toggleHandCard()">${showHandCard?'Hide hands':'Hand card'}</button>
+      <button class="btn" onclick="getHint()">💡 AI hint</button>
+    </div>
+
+    ${hints.length?renderHints():''}
+    ${showHandCard?renderHandCard(me.hand):''}
+    ${renderLog()}`;
+}
+
+function renderScoreboard(){
+  const sorted=[...G.players].sort((a,b)=>(G.gameScores[b.id]||0)-(G.gameScores[a.id]||0));
+  return `<div class="scoreboard" style="margin-bottom:12px">
+    <div class="sl" style="margin-bottom:6px">Scoreboard</div>
+    ${sorted.map(p=>`<div class="score-row ${p.id===myId?'me':''}">
+      <span>${p.name}${p.isAI?' 🤖':''}${p.id===myId?' (you)':''}</span>
+      <span class="score-pts">${G.gameScores[p.id]||0} pts</span>
+    </div>`).join('')}
+  </div>`;
+}
+
+function renderHandCard(hand){
+  return `<div class="hand-card">
+    <h3>Winning hands</h3>
+    ${HANDS.map(h=>{
+      const m=h.check(hand);
+      return `<div class="hrow ${m?'match':''}">
+        <span>${m?'✅':'○'} ${h.name} <span class="desc">— ${h.desc}</span></span>
+        <span class="pts">${h.pts} pts</span>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function renderHints(){
+  return `<div class="hint-box">
+    <h4>💡 AI hint</h4>
+    ${hints.map(h=>`<p>${h}</p>`).join('')}
+  </div>`;
+}
+
+function renderLog(){
+  return `<div class="log" style="margin-top:10px">${G.log.slice(0,8).map((l,i)=>`<p class="${i===0?'new':''}">${l}</p>`).join('')}</div>`;
+}
+
+function showRoundOver(msg){
+  const isWinner=msg.winnerId===myId;
+  document.getElementById('root').innerHTML=`
+    <div class="roundover">
+      <div class="trophy">${isWinner?'🏆':'😔'}</div>
+      <h2>${isWinner?'Mahjong! You win!':(msg.winnerName?msg.winnerName+' wins!':'Draw game')}</h2>
+      <p>${msg.handName?msg.handName+' — '+msg.pts+' points':msg.winnerId?'':'Wall was empty'}</p>
+      ${renderScoreboard()}
+      ${myIdx()===0?`<button class="btn btn-gold" onclick="nextRound()" style="margin-top:8px">Play again</button>`:'<p style="font-size:13px;color:rgba(255,255,255,.4)">Waiting for host to start next round…</p>'}
+    </div>`;
+}
+
+// ── Actions ──
+window.cPickTile=function(id){
+  const me=myPlayer(); if(!me) return;
+  const tile=me.hand.find(t=>t.id===id); if(!tile) return;
+  const idx=charPicks.findIndex(p=>p.id===id);
+  if(idx>=0) charPicks.splice(idx,1);
+  else if(charPicks.length<3) charPicks.push(tile);
+  render();
+};
+
+window.doCharleston=function(){
+  if(charPicks.length<3){toast('Select 3 tiles');return;}
+  ws.send(JSON.stringify({type:'charleston_pass',tileIds:charPicks.map(t=>t.id)}));
+  charPicks=[];
+};
+
+window.sendDraw=function(){ ws.send(JSON.stringify({type:'draw'})); };
+window.tryClaimDiscard=function(){
+  if(!isMyTurn()||turnDrawn){toast('You can only claim before drawing');return;}
+  if(!lastDiscardKey||lastDiscardPlayer===myIdx()){toast('Nothing to claim');return;}
+  ws.send(JSON.stringify({type:'claim'}));
+};
+window.sendDiscard=function(){
+  if(selected.length!==1){toast('Select exactly 1 tile to discard');return;}
+  ws.send(JSON.stringify({type:'discard',tileId:selected[0]}));
+  selected=[];
+};
+window.sendMahjong=function(){ ws.send(JSON.stringify({type:'mahjong'})); };
+window.nextRound=function(){ ws.send(JSON.stringify({type:'next_round'})); };
+window.getHint=function(){ ws.send(JSON.stringify({type:'ai_hint'})); hints=[]; };
+
+window.toggleSel=function(id){
+  const idx=selected.indexOf(id);
+  if(idx>=0) selected.splice(idx,1); else selected.push(id);
+  render();
+};
+
+window.sortRack=function(){
+  const me=myPlayer(); if(!me) return;
+  me.hand.sort((a,b)=>{
+    const o={flower:0,joker:1,wind:2,dragon:3,suit:4};
+    if(o[a.type]!==o[b.type]) return o[a.type]-o[b.type];
+    if(a.suit!==b.suit) return a.suit<b.suit?-1:1;
+    return (a.num||0)-(b.num||0);
+  });
+  render();
+};
+
+window.toggleHandCard=function(){ showHandCard=!showHandCard; hints=[]; render(); };
+
+// ── Instructions ──
+const INSTRUCTIONS_HTML=`<div class="modal-backdrop" onclick="closeModal(event)"><div class="modal">
+  <button class="modal-close" onclick="closeModal()">&times;</button>
+  <h2>How to play</h2>
+  <div class="inst-section"><h4>Goal</h4><p>Build one of the 12 winning hands using 14 tiles.</p></div>
+  <div class="inst-section"><h4>The Charleston</h4><p>Before play: pass 3 tiles right, across, then left. Pick tiles you don't want.</p></div>
+  <div class="inst-section"><h4>Your turn</h4><ul><li>Draw a tile from the wall, OR claim the last discard</li><li>Select a tile and click Discard</li><li>Click Declare Mahjong! if you have a winning hand</li></ul></div>
+  <div class="inst-section"><h4>Winning hands</h4>
+    <table class="hand-table"><thead><tr><th>Hand</th><th>Pts</th><th>Description</th></tr></thead><tbody>
+    ${HANDS.map(h=>`<tr><td>${h.name}</td><td>${h.pts}</td><td>${h.desc}</td></tr>`).join('')}
+    </tbody></table>
+  </div>
+</div></div>`;
+
+window.showInstructions=function(){ document.getElementById('modal-root').innerHTML=INSTRUCTIONS_HTML; };
+window.closeModal=function(e){ if(!e||e.target.classList.contains('modal-backdrop')||e.target.classList.contains('modal-close')) document.getElementById('modal-root').innerHTML=''; };
+
+function toast(msg,dur=2500){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('show'),dur);
+}
+
+// ── Boot ──
+myName=sessionStorage.getItem('mj_name');
+myId=sessionStorage.getItem('mj_id');
+myCode=sessionStorage.getItem('mj_code');
+document.getElementById('room-code-header').textContent=myCode?'Room '+myCode:'';
+
+if(!myName||!myCode){
+  // Redirect to lobby if no session
+  location.href='index.html';
+} else {
+  connect();
+}
+</script>
+</body>
+</html>
